@@ -54,15 +54,15 @@ def main():
         print(f"Frame size: {frame_width}x{frame_height}")
         
         # Define ROI (Region of Interest)
-        left = int(frame_width * 0.2)
-        right = int(frame_width * 0.8)
-        top = int(frame_height * 0.2)
-        bottom = int(frame_height * 0.8)
+        left = int(frame_width * 0.01)
+        right = int(frame_width * 0.99)
+        top = int(frame_height * 0.01)
+        bottom = int(frame_height * 0.99)
         
-        # Initialize hand detection
+        # Initialize hand detection - now detect up to 2 hands
         hands = mp_hands.Hands(
             static_image_mode=False,
-            max_num_hands=1,
+            max_num_hands=2,  # Changed to detect 2 hands
             min_detection_confidence=0.7,
             min_tracking_confidence=0.5
         )
@@ -80,9 +80,9 @@ def main():
         # Help text
         help_text = [
             "Gestures:",
-            "- Bring thumb and index finger close to left click",
-            "- Bring thumb and ring finger close to right click",
-            "- Move hand to control cursor",
+            "- Right hand: Move index finger to control cursor",
+            "- Left hand: Thumb+Index finger close = Left click",
+            "- Left hand: Thumb+Ring finger close = Right click",
             "Press ESC to exit"
         ]
         
@@ -109,8 +109,8 @@ def main():
                            cv2.FONT_HERSHEY_SIMPLEX, 0.6, (255, 255, 255), 2)
                 y += 25
             
-            if results.multi_hand_landmarks:
-                for hand_landmarks in results.multi_hand_landmarks:
+            if results.multi_hand_landmarks and results.multi_handedness:
+                for hand_landmarks, handedness in zip(results.multi_hand_landmarks, results.multi_handedness):
                     # Draw hand landmarks
                     mp_drawing.draw_landmarks(
                         frame, 
@@ -118,51 +118,78 @@ def main():
                         mp_hands.HAND_CONNECTIONS
                     )
                     
-                    # Get wrist for cursor control (changed from using average of wrist and middle finger)
-                    wrist = hand_landmarks.landmark[mp_hands.HandLandmark.WRIST]
+                    # Get hand label (Left or Right)
+                    hand_label = handedness.classification[0].label
                     
-                    # Use only wrist position for cursor control
-                    cursor_x = int(wrist.x * frame_width)
-                    cursor_y = int(wrist.y * frame_height)
+                    if hand_label == "Right":  # Right hand controls cursor movement
+                        # Use index finger tip for cursor control
+                        index_finger_tip = hand_landmarks.landmark[mp_hands.HandLandmark.INDEX_FINGER_TIP]
+                        
+                        cursor_x = int(index_finger_tip.x * frame_width)
+                        cursor_y = int(index_finger_tip.y * frame_height)
 
-                    if left <= cursor_x <= right and top <= cursor_y <= bottom:
-                        screen_x = (cursor_x - left) / (right - left) * screen_width
-                        screen_y = (cursor_y - top) / (bottom - top) * screen_height
+                        # Draw cursor position indicator
+                        cv2.circle(frame, (cursor_x, cursor_y), 10, (0, 0, 255), -1)
+                        cv2.putText(frame, "Cursor", (cursor_x + 15, cursor_y), 
+                                   cv2.FONT_HERSHEY_SIMPLEX, 0.5, (0, 0, 255), 2)
 
-                        try:
-                            pyautogui.moveTo(
-                                int(screen_x),
-                                int(screen_y),
-                                duration=0.1,
-                                _pause=False
-                            )
-                        except pyautogui.FailSafeException:
-                            print("FailSafe triggered - mouse in corner")
+                        if left <= cursor_x <= right and top <= cursor_y <= bottom:
+                            screen_x = (cursor_x - left) / (right - left) * screen_width
+                            screen_y = (cursor_y - top) / (bottom - top) * screen_height
 
-                    # Check for left click gesture
-                    thumb_tip = hand_landmarks.landmark[mp_hands.HandLandmark.THUMB_TIP]
-                    index_finger_tip = hand_landmarks.landmark[mp_hands.HandLandmark.INDEX_FINGER_TIP]
-                    distance = np.linalg.norm([thumb_tip.x - index_finger_tip.x, thumb_tip.y - index_finger_tip.y])
+                            try:
+                                pyautogui.moveTo(
+                                    int(screen_x),
+                                    int(screen_y),
+                                    duration=0.1,
+                                    _pause=False
+                                )
+                            except pyautogui.FailSafeException:
+                                print("FailSafe triggered - mouse in corner")
+                    
+                    elif hand_label == "Left":  # Left hand handles clicks
+                        thumb_tip = hand_landmarks.landmark[mp_hands.HandLandmark.THUMB_TIP]
+                        index_finger_tip = hand_landmarks.landmark[mp_hands.HandLandmark.INDEX_FINGER_TIP]
+                        ring_tip = hand_landmarks.landmark[mp_hands.HandLandmark.RING_FINGER_TIP]
+                        
+                        # Check for left click gesture (thumb + index finger)
+                        distance_left_click = np.linalg.norm([thumb_tip.x - index_finger_tip.x, thumb_tip.y - index_finger_tip.y])
+                        
+                        if distance_left_click < click_threshold and not is_left_clicked:
+                            print("Left click detected")
+                            is_left_clicked = True
+                            click_start_time = time.time()
+                            pyautogui.click(button='left')
+                        elif is_left_clicked and time.time() - click_start_time > click_duration:
+                            is_left_clicked = False
 
-                    if distance < click_threshold and not is_left_clicked:
-                        print("Left click detected")
-                        is_left_clicked = True
-                        click_start_time = time.time()
-                        pyautogui.click(button='left')
-                    elif is_left_clicked and time.time() - click_start_time > click_duration:
-                        is_left_clicked = False
+                        # Check for right click gesture (thumb + ring finger)
+                        distance_right_click = np.linalg.norm([thumb_tip.x - ring_tip.x, thumb_tip.y - ring_tip.y])
 
-                    # Check for right click gesture
-                    ring_tip = hand_landmarks.landmark[mp_hands.HandLandmark.RING_FINGER_TIP]
-                    distance_right_click = np.linalg.norm([thumb_tip.x - ring_tip.x, thumb_tip.y - ring_tip.y])
-
-                    if distance_right_click < right_click_threshold and not is_right_clicked:
-                        print("Right click detected")
-                        is_right_clicked = True
-                        click_start_time = time.time()
-                        pyautogui.click(button='right')
-                    elif is_right_clicked and time.time() - click_start_time > click_duration:
-                        is_right_clicked = False
+                        if distance_right_click < right_click_threshold and not is_right_clicked:
+                            print("Right click detected")
+                            is_right_clicked = True
+                            click_start_time = time.time()
+                            pyautogui.click(button='right')
+                        elif is_right_clicked and time.time() - click_start_time > click_duration:
+                            is_right_clicked = False
+                        
+                        # Visual feedback for left hand gestures
+                        thumb_pos = (int(thumb_tip.x * frame_width), int(thumb_tip.y * frame_height))
+                        index_pos = (int(index_finger_tip.x * frame_width), int(index_finger_tip.y * frame_height))
+                        ring_pos = (int(ring_tip.x * frame_width), int(ring_tip.y * frame_height))
+                        
+                        # Draw lines to show gesture distances
+                        cv2.line(frame, thumb_pos, index_pos, (255, 0, 0), 2)  # Blue for left click
+                        cv2.line(frame, thumb_pos, ring_pos, (0, 255, 255), 2)  # Yellow for right click
+                        
+                        # Show click states
+                        if is_left_clicked:
+                            cv2.putText(frame, "LEFT CLICK", (10, frame_height - 60), 
+                                       cv2.FONT_HERSHEY_SIMPLEX, 1, (255, 0, 0), 3)
+                        if is_right_clicked:
+                            cv2.putText(frame, "RIGHT CLICK", (10, frame_height - 30), 
+                                       cv2.FONT_HERSHEY_SIMPLEX, 1, (0, 255, 255), 3)
 
             # Display frame
             cv2.imshow('Hand Gesture Control', frame)
